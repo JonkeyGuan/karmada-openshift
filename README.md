@@ -1,15 +1,15 @@
-# Karmada on OpenShift 安装指南
+# Karmada on OpenShift Installation Guide
 
-在 OpenShift 4.20 集群上通过 Helm Chart 安装 Karmada v1.18.0，纳管多个集群，并部署 Karmada Dashboard。
+Deploy Karmada v1.18.0 on OpenShift 4.20 via Helm Chart, join multiple member clusters, and set up the Karmada Dashboard.
 
-## 环境要求
+## Prerequisites
 
-- OpenShift 4.x 集群（已验证 4.20.24 / K8s v1.33.12）
-- `oc` CLI 已登录且具有 cluster-admin 权限
+- OpenShift 4.x cluster (tested on 4.20.24 / K8s v1.33.12)
+- `oc` CLI logged in with cluster-admin privileges
 - Helm v3+
-- 集群具备动态存储（如 AWS gp3-csi）
+- Dynamic storage provisioner available (e.g., AWS gp3-csi)
 
-## 架构
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -34,18 +34,18 @@
           └─────────────────┘  └─────────────────┘
 ```
 
-## 安装步骤
+## Installation
 
-### 1. 添加 Helm Repo
+### 1. Add the Helm Repository
 
 ```bash
 helm repo add karmada-charts https://raw.githubusercontent.com/karmada-io/karmada/master/charts
 helm repo update karmada-charts
 ```
 
-### 2. 创建 Namespace 并授权 SCC
+### 2. Create the Namespace and Grant SCC Permissions
 
-OpenShift 默认的 restricted SCC 不允许容器以 root 运行，Karmada 的 cfssl、etcd 等组件需要 anyuid 权限。**必须在 helm install 之前完成**，否则 pre-install hook 会因权限不足失败。
+OpenShift's default restricted SCC prevents containers from running as root. Karmada components (cfssl, etcd, etc.) require the `anyuid` SCC. **This must be done before `helm install`**, otherwise the pre-install hook will fail with `Permission denied`.
 
 ```bash
 oc create namespace karmada-system
@@ -53,10 +53,10 @@ oc adm policy add-scc-to-user anyuid -z default -n karmada-system
 oc adm policy add-scc-to-user anyuid -z karmada-hook-job -n karmada-system
 ```
 
-### 3. Helm 安装 Karmada
+### 3. Install Karmada via Helm
 
-- etcd 使用 PVC 存储（OpenShift 限制 hostPath）
-- apiServer 使用 LoadBalancer 类型对外暴露
+- etcd uses PVC storage (OpenShift restricts hostPath)
+- apiServer uses LoadBalancer service type for external access
 
 ```bash
 helm install karmada karmada-charts/karmada \
@@ -68,50 +68,50 @@ helm install karmada karmada-charts/karmada \
   --set apiServer.serviceType=LoadBalancer
 ```
 
-### 4. 等待 Pod 就绪
+### 4. Wait for Pods to Be Ready
 
 ```bash
 oc get pods -n karmada-system -w
 ```
 
-所有 Pod 应在约 60 秒内变为 Running。
+All pods should reach Running status within approximately 60 seconds.
 
-### 5. 生成 Karmada Kubeconfig
+### 5. Generate the Karmada Kubeconfig
 
-获取 LoadBalancer 地址，生成可从外部访问的 kubeconfig：
+Retrieve the LoadBalancer address and generate a kubeconfig for external access:
 
 ```bash
-# 等待 LB 分配 EXTERNAL-IP（AWS ELB DNS 传播可能需要 2-3 分钟）
+# Wait for the LB to be assigned an EXTERNAL-IP (AWS ELB DNS propagation may take 2-3 minutes)
 oc get svc karmada-apiserver -n karmada-system
 
-# 获取 LB 地址
+# Get the LB address
 LB_HOST=$(oc get svc karmada-apiserver -n karmada-system \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-# 生成 kubeconfig，替换集群内部地址为 LB 地址
+# Generate kubeconfig, replacing the in-cluster address with the LB address
 oc get secret karmada-kubeconfig -n karmada-system \
   -o jsonpath='{.data.kubeconfig}' | base64 -d \
   | sed "s|https://karmada-apiserver.karmada-system.svc.cluster.local:5443|https://${LB_HOST}:5443|g" \
   > ~/.kube/karmada.config
 
-# 跳过 TLS 验证（LB 地址不在证书 SAN 中）
+# Skip TLS verification (LB address is not in the certificate SANs)
 kubectl config set-cluster karmada-apiserver \
   --kubeconfig=$HOME/.kube/karmada.config \
   --insecure-skip-tls-verify=true
 
-# 验证
+# Verify
 kubectl --kubeconfig ~/.kube/karmada.config get ns
 ```
 
-> **注意**: 如果 DNS 尚未传播，可先用 `nslookup <LB_HOST> 8.8.8.8` 获取 IP，用 IP 替代 hostname。
+> **Note**: If DNS has not propagated yet, use `nslookup <LB_HOST> 8.8.8.8` to get the IP and substitute it for the hostname.
 
-### 6. 安装 karmadactl CLI
+### 6. Install the karmadactl CLI
 
 ```bash
-# 自动安装（需要 sudo）
+# Automated install (requires sudo)
 curl -s https://raw.githubusercontent.com/karmada-io/karmada/master/hack/install-cli.sh | sudo bash
 
-# 或手动下载（macOS ARM64 示例）
+# Or manual download (macOS ARM64 example)
 VERSION="1.18.0"
 curl -sL "https://github.com/karmada-io/karmada/releases/download/v${VERSION}/karmadactl-darwin-arm64.tgz" \
   -o /tmp/karmadactl.tgz
@@ -120,19 +120,19 @@ mkdir -p ~/bin && cp /tmp/karmadactl ~/bin/
 export PATH=$HOME/bin:$PATH
 ```
 
-### 7. 纳管成员集群（Push 模式）
+### 7. Join Member Clusters (Push Mode)
 
 ```bash
-# 加入 Host 集群自身
+# Join the host cluster itself
 karmadactl --kubeconfig ~/.kube/karmada.config join <cluster-name> \
   --cluster-kubeconfig=$HOME/.kube/config \
   --cluster-context=$(oc config current-context)
 
-# 加入其他集群（需先准备目标集群的 kubeconfig）
-# 方式一：oc login 后使用 context
+# Join another cluster (prepare its kubeconfig first)
+# Option A: Log in via oc and use the context
 oc login https://api.<cluster-domain>:6443 -u admin -p <password>
 
-# 方式二：使用 ServiceAccount Token 创建 kubeconfig
+# Option B: Create a kubeconfig using a ServiceAccount token
 kubectl config set-cluster <cluster-name> \
   --server=https://api.<cluster-domain>:6443 \
   --insecure-skip-tls-verify=true \
@@ -147,22 +147,22 @@ kubectl config set-context <cluster-name> \
 kubectl config use-context <cluster-name> \
   --kubeconfig=$HOME/.kube/<cluster-name>.config
 
-# 加入
+# Join
 karmadactl --kubeconfig ~/.kube/karmada.config join <cluster-name> \
   --cluster-kubeconfig=$HOME/.kube/<cluster-name>.config \
   --cluster-context=<cluster-name>
 
-# 验证
+# Verify
 kubectl --kubeconfig ~/.kube/karmada.config get clusters
 ```
 
-### 8. 安装 Karmada Dashboard
+### 8. Install the Karmada Dashboard
 
 ```bash
-# 克隆 Dashboard 仓库
+# Clone the dashboard repository
 git clone https://github.com/karmada-io/dashboard.git /tmp/karmada-dashboard
 
-# 创建 Dashboard 连接 Karmada API 所需的 kubeconfig Secret（使用集群内部地址）
+# Create the kubeconfig secret for the dashboard to connect to the Karmada API (using the in-cluster address)
 oc get secret karmada-kubeconfig -n karmada-system \
   -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/karmada-dashboard-kubeconfig
 
@@ -170,10 +170,10 @@ oc create secret generic karmada-dashboard-config \
   --from-file=karmada.config=/tmp/karmada-dashboard-kubeconfig \
   -n karmada-system
 
-# 部署 Dashboard
+# Deploy the dashboard
 oc apply -k /tmp/karmada-dashboard/artifacts/overlays/nodeport-mode
 
-# 在 Karmada API 上创建 Dashboard RBAC
+# Create dashboard RBAC on the Karmada API
 kubectl --kubeconfig ~/.kube/karmada.config apply \
   -f /tmp/karmada-dashboard/artifacts/dashboard/karmada-dashboard-sa.yaml
 kubectl --kubeconfig ~/.kube/karmada.config apply \
@@ -181,15 +181,15 @@ kubectl --kubeconfig ~/.kube/karmada.config apply \
 kubectl --kubeconfig ~/.kube/karmada.config apply \
   -f /tmp/karmada-dashboard/artifacts/dashboard/member-cluster-clusterrolebinding.yaml
 
-# 创建 OpenShift Route 暴露 Dashboard Web UI
+# Create an OpenShift Route to expose the dashboard web UI
 oc create route edge karmada-dashboard \
   --service=karmada-dashboard-web --port=8000 -n karmada-system
 
-# 获取访问地址
+# Get the dashboard URL
 oc get route karmada-dashboard -n karmada-system -o jsonpath='{.spec.host}'
 ```
 
-### 9. 获取 Dashboard 登录 Token
+### 9. Get the Dashboard Login Token
 
 ```bash
 kubectl --kubeconfig ~/.kube/karmada.config \
@@ -197,16 +197,16 @@ kubectl --kubeconfig ~/.kube/karmada.config \
   -o jsonpath='{.data.token}' | base64 -d | tr -d '\n'
 ```
 
-将输出的 token 粘贴到 Dashboard 登录页面即可。
+Paste the token into the dashboard login page to sign in.
 
-## 验证与使用
+## Verification and Usage
 
-### 多集群分发验证
+### Multi-Cluster Distribution Test
 
-创建一个 Deployment + Service，通过 PropagationPolicy 分发到所有成员集群：
+Create a Deployment + Service and distribute them to all member clusters via a PropagationPolicy:
 
 ```bash
-# 1. 创建 Namespace 和应用（在 Karmada API 上）
+# 1. Create the namespace and application on the Karmada API
 cat <<'EOF' | kubectl --kubeconfig ~/.kube/karmada.config apply -f -
 apiVersion: v1
 kind: Namespace
@@ -250,11 +250,11 @@ spec:
   type: ClusterIP
 EOF
 
-# 2. 在成员集群上为 demo namespace 授权 SCC（OpenShift 必须）
+# 2. Grant SCC on each member cluster for the demo namespace (required on OpenShift)
 oc adm policy add-scc-to-user anyuid -z default -n karmada-demo
-oc --kubeconfig ~/.kube/cluster-5dll8.config adm policy add-scc-to-user anyuid -z default -n karmada-demo
+oc --kubeconfig ~/.kube/<member-cluster>.config adm policy add-scc-to-user anyuid -z default -n karmada-demo
 
-# 3. 创建 PropagationPolicy（按权重分发副本到两个集群）
+# 3. Create a PropagationPolicy (weighted replica distribution across clusters)
 cat <<'EOF' | kubectl --kubeconfig ~/.kube/karmada.config apply -f -
 apiVersion: policy.karmada.io/v1alpha1
 kind: PropagationPolicy
@@ -289,20 +289,20 @@ spec:
             weight: 1
 EOF
 
-# 4. 验证分发结果
+# 4. Verify the distribution
 kubectl --kubeconfig ~/.kube/karmada.config get rb -n karmada-demo -o wide
 oc get pods -n karmada-demo
-kubectl --kubeconfig ~/.kube/cluster-5dll8.config get pods -n karmada-demo
+kubectl --kubeconfig ~/.kube/<member-cluster>.config get pods -n karmada-demo
 ```
 
-预期结果：2 个副本按 1:1 权重分发，每个集群各运行 1 个 Pod。
+Expected result: 2 replicas distributed 1:1 by weight, one pod running on each cluster.
 
-### 可视化验证（浏览器直观对比）
+### Visual Verification (Browser-Based Comparison)
 
-部署一个显示所在集群信息的 Web 应用，通过两个集群各自的 Route 访问，直观看到同一份定义运行在不同集群上：
+Deploy a web application that displays its cluster information. Access it via Routes on each cluster to visually confirm that the same definition runs on different clusters:
 
 ```bash
-# 1. 创建应用（Duplicated 模式：每个集群完整运行一份副本）
+# 1. Create the application (Duplicated mode: full replica on every cluster)
 cat <<'EOF' | kubectl --kubeconfig ~/.kube/karmada.config apply -f -
 apiVersion: v1
 kind: Namespace
@@ -399,50 +399,50 @@ spec:
       replicaSchedulingType: Duplicated
 EOF
 
-# 2. 在两个集群上授权 SCC
+# 2. Grant SCC on both clusters
 oc adm policy add-scc-to-user anyuid -z default -n karmada-verify
 oc --kubeconfig ~/.kube/<member-cluster>.config adm policy add-scc-to-user anyuid -z default -n karmada-verify
 
-# 3. 在两个集群上分别创建 Route（注意 --port=8080）
+# 3. Create a Route on each cluster (note: --port=8080)
 oc create route edge cluster-info --service=cluster-info --port=8080 -n karmada-verify
 oc --kubeconfig ~/.kube/<member-cluster>.config create route edge cluster-info --service=cluster-info --port=8080 -n karmada-verify
 
-# 4. 获取两个 Route URL
+# 4. Get the Route URLs
 oc get route cluster-info -n karmada-verify -o jsonpath='{.spec.host}'
 oc --kubeconfig ~/.kube/<member-cluster>.config get route cluster-info -n karmada-verify -o jsonpath='{.spec.host}'
 ```
 
-在浏览器中打开两个 URL，可以直观看到：
-- **相同的应用** — 同一份 Deployment 定义
-- **不同的集群** — Hostname、Node、Pod IP 各不相同
+Open both URLs in a browser to see:
+- **Same application** -- identical Deployment definition
+- **Different clusters** -- distinct Hostname, Node, and Pod IP values
 
-> **注意**: OpenShift 上使用 `python:3-alpine` 镜像替代 `nginx`，因为 nginx 官方镜像在 anyuid SCC 下存在文件系统权限问题。
+> **Note**: Use `python:3-alpine` instead of the official `nginx` image on OpenShift, as the nginx image has filesystem permission issues under the anyuid SCC.
 
-清理：
+Cleanup:
 
 ```bash
 kubectl --kubeconfig ~/.kube/karmada.config delete ns karmada-verify
 ```
 
-### 常用操作
+### Common Operations
 
 ```bash
-# 查看纳管集群状态
+# List managed clusters
 kubectl --kubeconfig ~/.kube/karmada.config get clusters
 
-# 查看跨集群资源分发状态
+# View cross-cluster resource binding status
 kubectl --kubeconfig ~/.kube/karmada.config get rb -A -o wide
 
-# 查看 PropagationPolicy
+# List PropagationPolicies
 kubectl --kubeconfig ~/.kube/karmada.config get pp -A
 
-# 查看 OverridePolicy
+# List OverridePolicies
 kubectl --kubeconfig ~/.kube/karmada.config get op -A
 
-# 在 Karmada API 上创建资源（与普通 kubectl 用法一致）
+# Create resources on the Karmada API (same as standard kubectl usage)
 kubectl --kubeconfig ~/.kube/karmada.config apply -f <resource.yaml>
 
-# Dashboard 访问
+# Access the dashboard
 # URL: https://$(oc get route karmada-dashboard -n karmada-system -o jsonpath='{.spec.host}')
 # Token:
 kubectl --kubeconfig ~/.kube/karmada.config \
@@ -450,28 +450,28 @@ kubectl --kubeconfig ~/.kube/karmada.config \
   -o jsonpath='{.data.token}' | base64 -d | tr -d '\n'
 ```
 
-### 清理验证资源
+### Clean Up Verification Resources
 
 ```bash
 kubectl --kubeconfig ~/.kube/karmada.config delete ns karmada-demo
 kubectl --kubeconfig ~/.kube/karmada.config delete ns karmada-verify
 ```
 
-## 卸载
+## Uninstallation
 
 ```bash
-# 删除 Dashboard
+# Remove the dashboard
 oc delete route karmada-dashboard -n karmada-system
 oc delete -k /tmp/karmada-dashboard/artifacts/overlays/nodeport-mode
 oc delete secret karmada-dashboard-config -n karmada-system
 
-# 移除成员集群
+# Unjoin member clusters
 karmadactl --kubeconfig ~/.kube/karmada.config unjoin <cluster-name>
 
-# 卸载 Karmada
+# Uninstall Karmada
 helm uninstall karmada -n karmada-system
 
-# 清理残余资源
+# Clean up remaining resources
 oc delete sa karmada-hook-job -n karmada-system
 oc delete clusterrole karmada-hook-job
 oc delete clusterrolebinding karmada-hook-job
@@ -479,13 +479,13 @@ oc delete pvc --all -n karmada-system
 oc delete ns karmada-system
 ```
 
-## 常见问题
+## Troubleshooting
 
-| 问题 | 原因 | 解决方案 |
-|------|------|----------|
-| pre-install hook 报 `Permission denied` | 未授权 SCC | `oc adm policy add-scc-to-user anyuid -z default -n karmada-system` |
-| LB DNS 无法解析 | AWS ELB DNS 传播延迟 | 等待 2-3 分钟，或用 `nslookup <host> 8.8.8.8` 获取 IP |
-| kubeconfig 报 TLS 证书错误 | LB 地址不在证书 SAN 中 | kubeconfig 中设置 `insecure-skip-tls-verify: true` |
-| Dashboard token 报 "Invalid format" | token 复制不完整（含换行） | 用 `tr -d '\n'` 去除换行，或写入文件后 `pbcopy` 复制 |
-| etcd PVC Pending | StorageClass 不存在 | 确认 `oc get sc` 中有对应的 StorageClass |
-| nginx Pod CrashLoopBackOff | nginx 镜像在 anyuid SCC 下有文件权限问题 | 使用 `python:3-alpine` 或 OpenShift 兼容镜像替代 |
+| Problem | Cause | Solution |
+|---------|-------|----------|
+| Pre-install hook reports `Permission denied` | SCC not granted | `oc adm policy add-scc-to-user anyuid -z default -n karmada-system` |
+| LB DNS does not resolve | AWS ELB DNS propagation delay | Wait 2-3 minutes, or use `nslookup <host> 8.8.8.8` to get the IP |
+| Kubeconfig reports TLS certificate error | LB address not in certificate SANs | Set `insecure-skip-tls-verify: true` in the kubeconfig |
+| Dashboard token shows "Invalid format" | Token copied with newlines | Use `tr -d '\n'` to strip newlines, or save to a file and copy with `pbcopy` |
+| etcd PVC stuck in Pending | StorageClass does not exist | Verify with `oc get sc` that the specified StorageClass is available |
+| nginx pod CrashLoopBackOff | nginx image has filesystem permission issues under anyuid SCC | Use `python:3-alpine` or an OpenShift-compatible image instead |
