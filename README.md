@@ -160,26 +160,26 @@ kubectl --kubeconfig ~/.kube/karmada.config get clusters
 
 ```bash
 # Clone the dashboard repository
-git clone https://github.com/karmada-io/dashboard.git /tmp/karmada-dashboard
+git clone https://github.com/karmada-io/dashboard.git karmada-dashboard
 
 # Create the kubeconfig secret for the dashboard to connect to the Karmada API (using the in-cluster address)
 oc get secret karmada-kubeconfig -n karmada-system \
-  -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/karmada-dashboard-kubeconfig
+  -o jsonpath='{.data.kubeconfig}' | base64 -d > karmada-dashboard-kubeconfig
 
 oc create secret generic karmada-dashboard-config \
-  --from-file=karmada.config=/tmp/karmada-dashboard-kubeconfig \
+  --from-file=karmada.config=karmada-dashboard-kubeconfig \
   -n karmada-system
 
 # Deploy the dashboard
-oc apply -k /tmp/karmada-dashboard/artifacts/overlays/nodeport-mode
+oc apply -k karmada-dashboard/artifacts/overlays/nodeport-mode
 
 # Create dashboard RBAC on the Karmada API
 kubectl --kubeconfig ~/.kube/karmada.config apply \
-  -f /tmp/karmada-dashboard/artifacts/dashboard/karmada-dashboard-sa.yaml
+  -f karmada-dashboard/artifacts/dashboard/karmada-dashboard-sa.yaml
 kubectl --kubeconfig ~/.kube/karmada.config apply \
-  -f /tmp/karmada-dashboard/artifacts/dashboard/karmada-dashboard-clusterrolebinding.yaml
+  -f karmada-dashboard/artifacts/dashboard/karmada-dashboard-clusterrolebinding.yaml
 kubectl --kubeconfig ~/.kube/karmada.config apply \
-  -f /tmp/karmada-dashboard/artifacts/dashboard/member-cluster-clusterrolebinding.yaml
+  -f karmada-dashboard/artifacts/dashboard/member-cluster-clusterrolebinding.yaml
 
 # Create an OpenShift Route to expose the dashboard web UI
 oc create route edge karmada-dashboard \
@@ -462,7 +462,7 @@ kubectl --kubeconfig ~/.kube/karmada.config delete ns karmada-verify
 ```bash
 # Remove the dashboard
 oc delete route karmada-dashboard -n karmada-system
-oc delete -k /tmp/karmada-dashboard/artifacts/overlays/nodeport-mode
+oc delete -k karmada-dashboard/artifacts/overlays/nodeport-mode
 oc delete secret karmada-dashboard-config -n karmada-system
 
 # Unjoin member clusters
